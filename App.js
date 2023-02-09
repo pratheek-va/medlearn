@@ -8,7 +8,7 @@ import {
   Text,
   Linking,
 } from 'react-native';
-// import {Camera, useCameraDevices} from 'react-native-vision-camera';
+import {Camera, useCameraDevices} from 'react-native-vision-camera';
 import {
   ViroARScene,
   ViroText,
@@ -22,7 +22,14 @@ import {
 import Entypo from 'react-native-vector-icons/Entypo';
 import FontAwesome from 'react-native-vector-icons/FontAwesome';
 
-import * as fs from 'react-native-fs';
+import fs from 'react-native-fs';
+
+import * as tf from '@tensorflow/tfjs'
+import {bundleResourceIO, decodeJpeg} from '@tensorflow/tfjs-react-native'
+// import * as FileSystem from 'expo-file-system';
+
+const modelJSON = require('./model2/model.json')
+const modelWeights = require('./model2/group1-shard.bin')
 
 const HelloWorldSceneAR = props => {
   const data = props.sceneNavigator.viroAppProps;
@@ -55,20 +62,82 @@ const HelloWorldSceneAR = props => {
 };
 
 export default () => {
-  // const devices = useCameraDevices();
-  // const device = devices.back;
-  // const camera = useRef(null);
+  const devices = useCameraDevices();
+  const device = devices.back;
+  const camera = useRef(null);
 
-  // //Camera
+  //Camera
 
-  // //Handler
-  // const requestCameraPermission = useCallback(async () => {
-  //   const permission = await Camera.requestCameraPermission();
-  //   if (permission === 'denied') await Linking.openSettings();
-  // }, []);
+  //Handler
+  const requestCameraPermission = useCallback(async () => {
+    const permission = await Camera.requestCameraPermission();
+    if (permission === 'denied') await Linking.openSettings();
+  }, []);
 
   const [object, setObject] = useState('skull');
   const [augmentedReality, setAugmentedReality] = useState(false);
+
+  // useEffect(() => {
+  //   const loadModel = async () => {
+  //         await tf.ready();
+  //     //.ts: const loadModel = async ():Promise<void|tf.LayersModel>=>{
+  //         const model = await tf.loadLayersModel(
+  //             bundleResourceIO(modelJSON, modelWeights)
+  //         ).catch((e)=>{
+  //           console.log("[LOADING ERROR] info:",e)
+  //         })
+  //         console.log(model);
+  //         console.log("hello");
+  //     }
+  //     loadModel();
+  // }, [])
+
+  const loadModel = async()=>{
+    //.ts: const loadModel = async ():Promise<void|tf.LayersModel>=>{
+        const model = await tf.loadLayersModel(
+            bundleResourceIO(modelJSON, modelWeights)
+        ).catch((e)=>{
+          console.log("[LOADING ERROR] info:",e)
+        })
+        return model
+    }
+    const transformImageToTensor = async (uri)=>{
+      //.ts: const transformImageToTensor = async (uri:string):Promise<tf.Tensor>=>{
+      //read the image as base64
+        const img64 = await fs.readFile(uri, "base64");
+        // const img64 = await FileSystem.readAsStringAsync(uri, {encoding:FileSystem.EncodingType.Base64})
+        const imgBuffer =  tf.util.encodeString(img64, 'base64')
+        const raw = new Uint8Array(imgBuffer)
+        let imgTensor = decodeJpeg(raw)
+        console.log(imgTensor);
+        const scalar = tf.scalar(255)
+      //resize the image
+        imgTensor = tf.image.resizeNearestNeighbor(imgTensor, [64, 64])
+      //normalize; if a normalization layer is in the model, this step can be skipped
+        const tensorScaled = imgTensor.div(scalar)
+      //final shape of the rensor
+        const img = tf.reshape(tensorScaled, [1,64,64,3])
+        return img
+    }
+    const makePredictions = async ( batch, model, imagesTensor )=>{
+      //.ts: const makePredictions = async (batch:number, model:tf.LayersModel,imagesTensor:tf.Tensor<tf.Rank>):Promise<tf.Tensor<tf.Rank>[]>=>{
+      //cast output prediction to tensor
+      const predictionsdata= model.predict(imagesTensor)
+      //.ts: const predictionsdata:tf.Tensor = model.predict(imagesTensor) as tf.Tensor
+      let pred = predictionsdata.split(batch) //split by batch size
+      //return predictions 
+      return pred
+  }
+
+  const getPredictions = async (image)=>{
+    await tf.ready()
+    const model = await loadModel();
+    const tensor_image = await transformImageToTensor(image)
+    const predictions = await makePredictions(1, model, tensor_image)
+    return predictions    
+}
+
+
 
   const renderAR = () => {
     return (
@@ -106,12 +175,13 @@ export default () => {
     );
   };
 
-  // const takePicture = async () => {
-  //   const photo = await camera.current.takePhoto({
-  //     flash: 'off',
-  //   });
-  //   console.log(photo.uri);
-  // };
+  const takePicture = async () => {
+    const photo = await camera.current.takePhoto({
+      flash: 'off',
+    });
+    const pred = await getPredictions(photo.path);
+    console.log("from takePicture" , pred);
+  };
 
   const renderCamera = () => {
     if (device == null) {
@@ -119,7 +189,13 @@ export default () => {
     } else {
       return (
         <React.Fragment>
-          <Camera style={StyleSheet.absoluteFill} />
+          <Camera 
+          style={StyleSheet.absoluteFill}
+          ref={camera}
+          device={device}
+          isActive={true}  
+          enableZoomGesture 
+          photo={true} />
           <TouchableOpacity
             onPress={takePicture}
             style={styles.buttonContainer}>
@@ -137,7 +213,7 @@ export default () => {
 
   return (
     <View style={{flex: 1}}>
-      {augmentedReality ? renderAR() : renderCamera()}
+      {augmentedReality ? renderCamera() : renderAR()}
     </View>
   );
 };
